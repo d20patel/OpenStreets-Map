@@ -1,0 +1,507 @@
+// application.cpp
+// <Deep Patel>
+//
+// University of Illinois at Chicago
+// CS 251: Fall 2021
+// Project #7 - Openstreet Maps
+//
+// References:
+// TinyXML: https://github.com/leethomason/tinyxml2
+// OpenStreetMap: https://www.openstreetmap.org
+// OpenStreetMap docs:
+//   https://wiki.openstreetmap.org/wiki/Main_Page
+//   https://wiki.openstreetmap.org/wiki/Map_Features
+//   https://wiki.openstreetmap.org/wiki/Node
+//   https://wiki.openstreetmap.org/wiki/Way
+//   https://wiki.openstreetmap.org/wiki/Relation
+//
+
+#include <iostream>
+#include <iomanip>  /*setprecision*/
+#include <string>
+#include <vector>
+#include <map>
+#include <cstdlib>
+#include <cstring>
+#include <cassert>
+#include <limits>
+#include <queue>
+#include <stack>
+
+#include "tinyxml2.h"
+#include "dist.h"
+#include "osm.h"
+#include "graph.h"
+
+using namespace std;
+using namespace tinyxml2;
+const double INF = numeric_limits<double>::max();
+
+class prioritize {
+	public:
+		bool operator()(const pair<long long, double>& p1,
+										const pair<long long, double>& p2) const {
+			if (p1.second == p2.second) {
+				return p1.first > p2.first;
+			}
+			return p1.second > p2.second;
+		}
+};
+//
+// Implement your creative component application here
+// TO DO: add arguments
+//
+
+
+bool searchBuilding(string& personBuilding, BuildingInfo& location,
+										BuildingInfo& p_info) {
+	if (personBuilding == location.Abbrev) {
+		p_info.Fullname = location.Fullname;
+		p_info.Coords = location.Coords;
+		return true;
+	} else if (location.Fullname.find(personBuilding) != string::npos) {
+		p_info.Fullname = location.Fullname;
+		p_info.Coords = location.Coords;
+		return true;
+	}
+	return false;
+}
+
+BuildingInfo nearestBuilding(Coordinates& midpoint,
+														 vector<BuildingInfo>& Buildings,
+														 set<string>& destUnreachable) {
+	double min = INF;
+	BuildingInfo midBuild;
+	for (auto bi : Buildings) {
+		double distance = distBetween2Points(midpoint.Lat, midpoint.Lon,
+																		     bi.Coords.Lat, bi.Coords.Lon);
+		if (distance < min and destUnreachable.count(bi.Fullname) != 1) {
+			min = distance;
+			midBuild = bi;
+		} else {
+			continue;
+		}
+	}
+	return midBuild;
+}
+
+long long nearestNode(BuildingInfo& b_info, map<long long,
+											Coordinates>& Nodes,
+											vector<FootwayInfo>& Footways) {
+	double min = INF;
+	long long nearestID;
+	for (auto ftway : Footways) {
+		for (auto fi : ftway.Nodes) {
+			double distance = distBetween2Points(b_info.Coords.Lat,
+																					 b_info.Coords.Lon,
+																					 Nodes.at(fi).Lat,
+																					 Nodes.at(fi).Lon);
+			if (distance < min) {
+				min = distance;
+				nearestID = fi;
+			}
+		}
+	}
+	return nearestID;
+}
+
+
+vector<long long> DijkstraShortestPath(long long& startV,
+													map<long long, double>& distances,
+													map<long long, long long>& predecessor,
+													graph<long long, double>& G,
+													map<long long, Coordinates>& Nodes,
+													vector<BuildingInfo>& Buildings,
+													set<string>& destUnreachable) {
+	vector<long long> visited;
+	priority_queue<pair<long long, double>,
+									vector<pair<long long, double>>,
+								  prioritize> unvisitedQueue;
+	vector<long long> vertices = G.getVertices();
+	long long currV;
+	bool currentVisited;
+	set<long long> adjToCurrentV;
+
+  for (auto currV : vertices) {
+		Coordinates Cods = Nodes.at(currV);
+		BuildingInfo Binfo = nearestBuilding(Cods, Buildings, destUnreachable);
+		if (destUnreachable.count(Binfo.Fullname) != 1) {
+			distances[currV] = INF;
+			predecessor[currV] = 0;
+			unvisitedQueue.push({currV, INF});
+		}
+	}
+
+	distances[startV] = 0;
+	unvisitedQueue.push({startV, 0});
+
+	while(!unvisitedQueue.empty()) {
+		currentVisited = false;
+		currV = unvisitedQueue.top().first;
+		unvisitedQueue.pop();
+
+		for (auto v : visited) {
+			if (v == currV) {
+				currentVisited = true;
+			}
+		}
+		if (distances[currV] == INF) {
+			break;
+		} else if (currentVisited) {
+			continue;
+		} else {
+			visited.push_back(currV);
+			adjToCurrentV = G.neighbors(currV);
+			for (auto v : adjToCurrentV) {
+				double edgeWeight = 0.0;
+				G.getWeight(currV, v, edgeWeight);
+				double altPathDist = distances[currV] + edgeWeight;
+
+				if (altPathDist < distances[v]) {
+					distances[v] = altPathDist;
+					predecessor[v] = currV;
+					unvisitedQueue.push({v, altPathDist});
+				}
+			}
+		}
+	}
+	return visited;
+}
+
+vector<long long> getPath(map<long long, long long>& predecessor,
+													long long& endVert) {
+	long long currVert = endVert;
+	stack<long long> stackPath;
+	while (currVert != 0) {
+		stackPath.push(currVert);
+		currVert = predecessor.at(currVert);
+	}
+	vector<long long> finalPath;
+	while(!stackPath.empty()) {
+		currVert = stackPath.top();
+		stackPath.pop();
+		finalPath.push_back(currVert);
+	}
+	return finalPath;
+}
+
+void printPath(vector<long long>& p1Path, vector<long long>& p2Path,
+							  double& distTOdest1, double& distTOdest2) {
+	cout << endl << "Person 1's distance to dest: ";
+	cout << distTOdest1 << " miles" << endl;
+	cout << "Path: ";
+	unsigned i;
+	for (i = 0; i < p1Path.size()-1; i++) {
+		cout << p1Path[i] << "->";
+	}
+	cout << p1Path[i] << endl;
+	cout << endl << "Person 2's distance to dest: ";
+	cout << distTOdest2 << " miles" << endl;
+	cout << "Path: ";
+	for (i = 0; i < p2Path.size()-1; i++) {
+		cout << p2Path[i] << "->";
+	}
+	cout << p2Path[i] << endl;
+}
+
+void creative(map<long long, Coordinates>& Nodes, vector<FootwayInfo>& Footways,
+							vector<BuildingInfo>& Buildings, graph<long long, double> G) {
+	string person1Building, person2Building;
+  cout << endl;
+	cout << "Enter person 1's building (partial name or abbreviation), or #> ";
+	getline(cin, person1Building);
+	while (person1Building != "#") {
+		cout << "Enter person 2's building (partial name or abbreviation)> ";
+		getline(cin, person2Building);
+		bool p1_building = false;
+		bool p2_building = false;
+		BuildingInfo p1_info;
+		BuildingInfo p2_info;
+		for (auto location : Buildings) {
+			if (p1_building == true and p2_building == true) {
+				break;
+			} else if (p1_building == false or p2_building == false) {
+				if (p1_building == false) {
+					p1_building = searchBuilding(person1Building, location, p1_info);
+				}
+				if (p2_building == false) {
+					p2_building = searchBuilding(person2Building, location, p2_info);
+				}
+			}
+		}
+		if (p1_building != true) {
+			cout << "Person 1's building not found" << endl;
+		} else if (p2_building != true) {
+			cout << "Person 2's building not found" << endl;
+		}
+		if (p1_building == true and p2_building == true) {
+			Coordinates initialMidpoint = centerBetween2Points(p1_info.Coords.Lat,
+																									p1_info.Coords.Lon,
+																									p2_info.Coords.Lat,
+																									p2_info.Coords.Lon);
+			Coordinates finalMidpoint = centerBetween2Points(p1_info.Coords.Lat,
+																									p1_info.Coords.Lon,
+																									initialMidpoint.Lat,
+																									initialMidpoint.Lon);
+			set<string> destUnreachable;
+			BuildingInfo destBuild = nearestBuilding(finalMidpoint, Buildings, destUnreachable);
+			cout << endl << "Person 1's point:" << endl;
+			cout << " " << p1_info.Fullname << endl;
+			cout << " (" << p1_info.Coords.Lat << ", ";
+			cout << p1_info.Coords.Lon << ")" << endl;
+			cout << "Person 2's point:" << endl;
+			cout << " " << p2_info.Fullname << endl;
+			cout << " (" << p2_info.Coords.Lat << ", ";
+			cout << p2_info.Coords.Lon << ")" << endl;
+			cout << "Destination Building:" << endl;
+			cout << " " << destBuild.Fullname << endl;
+			cout << " (" << destBuild.Coords.Lat << ", ";
+			cout << destBuild.Coords.Lon << ")" << endl;
+		}
+		cout << "Enter person 1's building (partial name or abbreviation), or #> ";
+		getline(cin, person1Building);
+	}
+}
+	
+//
+// Implement your standard application here
+// TO DO: add a parameter for the graph you make.
+//
+void application(
+    map<long long, Coordinates>& Nodes, vector<FootwayInfo>& Footways,
+    vector<BuildingInfo>& Buildings, graph<long long, double>& G) {
+  string person1Building, person2Building;
+
+  cout << endl;
+  cout << "Enter person 1's building (partial name or abbreviation), or #> ";
+  getline(cin, person1Building);
+  while (person1Building != "#") {
+		set<string> destUnreachable;
+    cout << "Enter person 2's building (partial name or abbreviation)> ";
+    getline(cin, person2Building);
+
+		bool p1_building = false;
+		bool p2_building = false;
+		BuildingInfo p1_info;
+		BuildingInfo p2_info;
+		for (auto location : Buildings) {
+			if (p1_building == true and p2_building == true) {
+				break;
+			} else if (p1_building == false or p2_building == false) {
+				if (p1_building == false) {
+					p1_building = searchBuilding(person1Building, location, p1_info);
+				}
+				if (p2_building == false) {
+					p2_building = searchBuilding(person2Building, location, p2_info);
+				}
+			}
+		}
+		if (p1_building != true) {
+			cout << "Person 1's building not found" << endl;
+		} else if (p2_building != true) {
+			cout << "Person 2's building not found" << endl;
+		}
+    //
+    // TO DO: lookup buildings, find nearest start and dest nodes, find center
+    // run Dijkstra's alg from each start,
+    // output distances and paths to destination:
+    //
+		BuildingInfo destBuild;
+		bool foundPath = false;
+		if (p1_building == true and p2_building == true) {
+			Coordinates midpoint = centerBetween2Points(p1_info.Coords.Lat,
+																									p1_info.Coords.Lon,
+																								  p2_info.Coords.Lat,
+																									p2_info.Coords.Lon);
+			destBuild = nearestBuilding(midpoint, Buildings, destUnreachable);
+			cout << endl << "Person 1's point:" << endl;
+			cout << " " << p1_info.Fullname << endl;
+			cout << " (" << p1_info.Coords.Lat << ", ";
+			cout << p1_info.Coords.Lon << ")" << endl;
+			cout << "Person 2's point:" << endl;
+			cout << " " << p2_info.Fullname << endl;
+			cout << " (" << p2_info.Coords.Lat << ", ";
+			cout << p2_info.Coords.Lon << ")" << endl;
+			cout << "Destination Building:" << endl;
+			cout << " " << destBuild.Fullname << endl;
+			cout << " (" << destBuild.Coords.Lat << ", ";
+			cout << destBuild.Coords.Lon << ")" << endl;
+
+			long long nearestB1 = nearestNode(p1_info, Nodes, Footways);
+			long long nearestB2 = nearestNode(p2_info, Nodes, Footways);
+			long long nearestB3 = nearestNode(destBuild, Nodes, Footways);
+			cout << endl << "Nearest P1 node:" << endl;
+			cout << " " << nearestB1 << endl;
+			cout << " (" << Nodes.at(nearestB1).Lat << ", ";
+			cout << Nodes.at(nearestB1).Lon << ")" << endl;
+			cout << "Nearest P2 node:" << endl;
+			cout << " " << nearestB2 << endl;
+			cout << " (" << Nodes.at(nearestB2).Lat << ", ";
+			cout << Nodes.at(nearestB2).Lon << ")" << endl;
+			cout << "Nearest destination node:" << endl;
+			cout << " " << nearestB3 << endl;
+			cout << " (" << Nodes.at(nearestB3).Lat << ", ";
+			cout << Nodes.at(nearestB3).Lon << ")" << endl;
+			bool newBuild = false;
+			while (!foundPath) {
+				destBuild = nearestBuilding(midpoint, Buildings, destUnreachable);
+				nearestB3 = nearestNode(destBuild, Nodes, Footways);
+				map<long long, double> distances1;
+				map<long long, long long> predecessor1;
+				map<long long, double> distances2;
+				map<long long, long long> predecessor2;
+				DijkstraShortestPath(nearestB1, distances1, predecessor1, G,
+														 Nodes, Buildings, destUnreachable);
+				DijkstraShortestPath(nearestB2, distances2, predecessor2, G,
+														 Nodes, Buildings, destUnreachable);
+				double distTOdest1 = distances1[nearestB3];
+				double distTOdest2 = distances2[nearestB3];
+				if (distTOdest1 >= INF or distTOdest2 >= INF) {
+					destUnreachable.insert(destBuild.Fullname);
+					foundPath = false;
+					newBuild = true;
+					cout << endl << "At least one person was unable to reach the ";
+					cout << "destination building. Finding next closest building...";
+					cout << endl << endl;
+				} else {
+					vector<long long> p1Path = getPath(predecessor1, nearestB3);
+					vector<long long> p2Path = getPath(predecessor2, nearestB3);
+					if (newBuild) {
+						cout << "New destination building:" << endl;
+						cout << " " << destBuild.Fullname << endl;
+						cout << " (" << destBuild.Coords.Lat << ", " << destBuild.Coords.Lon;
+						cout << ")" << endl << endl;
+						cout << "Nearest destination node:" << endl;
+						cout << " " << nearestB3 << endl;
+						cout << " (" << Nodes.at(nearestB3).Lat << ", ";
+						cout << Nodes.at(nearestB3).Lon << ")" << endl;
+					}
+					foundPath = true;
+					printPath(p1Path, p2Path, distTOdest1, distTOdest2);
+				}
+			}
+		}
+		destUnreachable.clear();
+    cout << endl;
+    cout << "Enter person 1's building (partial name or abbreviation), or #> ";
+    getline(cin, person1Building);
+		foundPath = false;
+  }
+}
+
+
+int main() {
+  // maps a Node ID to it's coordinates (lat, lon)
+  map<long long, Coordinates>  Nodes;
+  // info about each footway, in no particular order
+  vector<FootwayInfo>          Footways;
+  // info about each building, in no particular order
+  vector<BuildingInfo>         Buildings;
+  XMLDocument                  xmldoc;
+  cout << "** Navigating UIC open street map **" << endl;
+  cout << endl;
+  cout << std::setprecision(8);
+
+  string def_filename = "map.osm";
+  string filename;
+
+  cout << "Enter map filename> ";
+  getline(cin, filename);
+
+  if (filename == "") {
+    filename = def_filename;
+  }
+
+  //
+  // Load XML-based map file
+  //
+  if (!LoadOpenStreetMap(filename, xmldoc)) {
+    cout << "**Error: unable to load open street map." << endl;
+    cout << endl;
+    return 0;
+  }
+
+  //
+  // Read the nodes, which are the various known positions on the map:
+  //
+  int nodeCount = ReadMapNodes(xmldoc, Nodes);
+
+  //
+  // Read the footways, which are the walking paths:
+  //
+  int footwayCount = ReadFootways(xmldoc, Footways);
+
+  //
+  // Read the university buildings:
+  //
+  int buildingCount = ReadUniversityBuildings(xmldoc, Nodes, Buildings);
+
+  //
+  // Stats
+  //
+  assert(nodeCount == (int)Nodes.size());
+  assert(footwayCount == (int)Footways.size());
+  assert(buildingCount == (int)Buildings.size());
+
+  cout << endl;
+  cout << "# of nodes: " << Nodes.size() << endl;
+  cout << "# of footways: " << Footways.size() << endl;
+  cout << "# of buildings: " << Buildings.size() << endl;
+
+  //
+  // TO DO: build the graph, output stats:
+  //
+	graph<long long, double> G;  // declared graph variable
+	for (auto location : Nodes) {  // loop through map
+		G.addVertex(location.first);  // add every node(key) as a vertex
+	}
+
+	for (auto ftway : Footways) {  // loop through vector
+		// loop through Nodes
+		for (unsigned point = 0; point < ftway.Nodes.size()-1; point++) {
+			// to calculate distance between node[i] to node[i+1]
+			long long ft1 = ftway.Nodes[point];
+			long long ft2 = ftway.Nodes[point+1];
+			double distance = distBetween2Points(Nodes.at(ft1).Lat,
+																					 Nodes.at(ft1).Lon,
+																					 Nodes.at(ft2).Lat,
+																					 Nodes.at(ft2).Lon);
+			// bidirectional edge
+			G.addEdge(ft1, ft2, distance);
+			G.addEdge(ft2, ft1, distance);
+		}
+	}
+
+  cout << "# of vertices: " << G.NumVertices() << endl;
+  cout << "# of edges: " << G.NumEdges() << endl;
+  cout << endl;
+
+  //
+  // Menu
+  //
+  string userInput;
+  cout << "Enter \"a\" for the standard application or "
+        << "\"c\" for the creative component application> ";
+  getline(cin, userInput);
+  if (userInput == "a") {
+    // TO DO: add argument for the graph you make.
+    application(Nodes, Footways, Buildings, G);
+  } else if (userInput == "c") {
+    // TO DO: add arguments
+		/*char tired;
+		bool isTired;
+		cout << "Are you tired (Y/N): ";
+		cin >> tired;
+		if (tired == 'Y') {
+			isTired = true;
+		} else {
+			isTired = false;
+		}*/
+    creative(Nodes, Footways, Buildings, G);
+  }
+  //
+  // done:
+  //
+  cout << "** Done **" << endl;
+  return 0;
+}
